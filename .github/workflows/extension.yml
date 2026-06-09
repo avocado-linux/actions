@@ -1,0 +1,193 @@
+name: Avocado Extension CI
+
+# Reusable CI for an Avocado extension / BSP repo.
+#
+#   on PR / push  -> install + build the extension against the distro SDK
+#                    (default release 2024) to prove it still assembles.
+#   on tag        -> package the extension into a noarch RPM and publish it to
+#                    avocado-connect (keyless: GitHub OIDC -> short-lived token).
+#
+# The build target is auto-derived from avocado.yaml: `supported_targets: '*'`
+# builds on qemux86-64; a single-board BSP builds on its board. Override with the
+# `target` input. Callers need `permissions: id-token: write` for tag publishes.
+#
+# Usage (thin caller, identical in every repo):
+#   jobs:
+#     ci:
+#       uses: avocado-linux/actions/.github/workflows/extension.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      distro-release:
+        description: Distro SDK release to build against (sets AVOCADO_DISTRO_RELEASE).
+        type: string
+        default: "2024"
+      distro-channel:
+        description: Distro SDK channel (sets AVOCADO_DISTRO_CHANNEL).
+        type: string
+        default: "edge"
+      cli-version:
+        description: avocado-cli release to use ("latest" or a tag like 0.41.0).
+        type: string
+        default: "latest"
+      target:
+        description: Build target machine. Empty = auto-derive from avocado.yaml.
+        type: string
+        default: ""
+      connect-url:
+        description: avocado-connect base URL (publish only).
+        type: string
+        default: "https://connect.peridio.com"
+      oidc-audience:
+        description: Audience to request the GitHub OIDC id-token with (publish only).
+        type: string
+        default: "avocado-connect"
+      target-release:
+        description: Feed release to publish into (publish only).
+        type: string
+        default: "2026"
+      target-channel:
+        description: Feed channel to publish into (publish only).
+        type: string
+        default: "edge"
+      publish-targets:
+        description: Comma-separated machines to publish for. Empty = the resolved build target.
+        type: string
+        default: ""
+
+jobs:
+  resolve:
+    name: Resolve extension
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.read.outputs.name }}
+      target: ${{ steps.read.outputs.target }}
+      version: ${{ steps.read.outputs.version }}
+      release: ${{ steps.read.outputs.release }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: read
+        name: Read avocado.yaml
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, sys, yaml
+          cfg = yaml.safe_load(open("avocado.yaml")) or {}
+          exts = cfg.get("extensions") or {}
+          if not exts:
+              sys.exit("avocado.yaml has no `extensions:` block")
+          name = next(iter(exts))
+          ext = exts[name] or {}
+
+          target = (os.environ.get("INPUT_TARGET") or "").strip()
+          if not target:
+              st = cfg.get("supported_targets")
+              if st in ("*", ["*"]):
+                  target = "qemux86-64"
+              elif isinstance(st, list) and st:
+                  target = st[0]
+              else:
+                  target = cfg.get("default_target") or ""
+          if not target:
+              sys.exit("could not resolve a build target (set the `target` input)")
+
+          print(f"name={name}")
+          print(f"target={target}")
+          print(f"version={ext.get('version','')}")
+          print(f"release={ext.get('release','r0')}")
+          PY
+      - name: Summary
+        run: |
+          echo "Extension: ${{ steps.read.outputs.name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Target:    ${{ steps.read.outputs.target }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version:   ${{ steps.read.outputs.version }}-${{ steps.read.outputs.release }}" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Install & build (${{ needs.resolve.outputs.target }} @ ${{ inputs.distro-release }})
+    needs: resolve
+    runs-on: ubuntu-latest
+    env:
+      AVOCADO_DISTRO_RELEASE: ${{ inputs.distro-release }}
+      AVOCADO_DISTRO_CHANNEL: ${{ inputs.distro-channel }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install avocado CLI
+        uses: avocado-linux/actions/setup-avocado-cli@v1
+        with:
+          version: ${{ inputs.cli-version }}
+
+      - name: avocado install
+        run: avocado install --target "${{ needs.resolve.outputs.target }}"
+
+      - name: avocado ext build
+        run: avocado ext build "${{ needs.resolve.outputs.name }}" --target "${{ needs.resolve.outputs.target }}"
+
+      - name: avocado ext package
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p out
+          avocado ext package "${{ needs.resolve.outputs.name }}" \
+            --target "${{ needs.resolve.outputs.target }}" --out out
+          ls -l out
+
+      - name: Upload RPM artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ext-rpm
+          path: out/*.rpm
+          if-no-files-found: error
+
+  publish:
+    name: Publish to connect
+    needs: [resolve, build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Guard — tag matches avocado.yaml version
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag '$TAG' does not match avocado.yaml version '$VERSION' — bump the version or fix the tag" >&2
+            exit 1
+          fi
+
+      - name: Install avocado CLI
+        uses: avocado-linux/actions/setup-avocado-cli@v1
+        with:
+          version: ${{ inputs.cli-version }}
+
+      - name: Download RPM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ext-rpm
+          path: out
+
+      - name: Authenticate (GitHub OIDC -> connect)
+        uses: avocado-linux/actions/oidc-login@v1
+        with:
+          connect-url: ${{ inputs.connect-url }}
+          audience: ${{ inputs.oidc-audience }}
+
+      - name: Publish extension
+        env:
+          CONNECT_URL: ${{ inputs.connect-url }}
+        run: |
+          rpm="$(ls out/*.rpm | head -1)"
+          targets="${{ inputs.publish-targets }}"
+          [ -n "$targets" ] || targets="${{ needs.resolve.outputs.target }}"
+          echo "Publishing $rpm to ${{ inputs.target-release }}/${{ inputs.target-channel }} for $targets"
+          AVOCADO_CONNECT_URL="$CONNECT_URL" avocado connect ext publish "$rpm" \
+            --target-release "${{ inputs.target-release }}" \
+            --target-channel "${{ inputs.target-channel }}" \
+            --targets "$targets"

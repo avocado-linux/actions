@@ -1,0 +1,49 @@
+name: Avocado connect login (GitHub OIDC)
+description: Exchange the GitHub Actions OIDC id-token for a short-lived connect token and log the avocado CLI in. Keyless — no stored secret.
+branding:
+  icon: log-in
+  color: green
+inputs:
+  connect-url:
+    description: avocado-connect base URL.
+    required: false
+    default: https://connect.peridio.com
+  audience:
+    description: Audience to request the OIDC id-token with (must match the server's configured audience).
+    required: false
+    default: avocado-connect
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        CONNECT_URL: ${{ inputs.connect-url }}
+        AUDIENCE: ${{ inputs.audience }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+          echo "::error::OIDC unavailable — the calling job needs 'permissions: id-token: write'" >&2
+          exit 1
+        fi
+        if ! command -v avocado >/dev/null 2>&1; then
+          echo "::error::avocado CLI not on PATH — run avocado-linux/actions/setup-avocado-cli first" >&2
+          exit 1
+        fi
+        # 1. Ask the GitHub OIDC provider for an id-token scoped to our audience.
+        idtoken="$(curl -sSfL -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value')"
+        if [ -z "$idtoken" ] || [ "$idtoken" = "null" ]; then
+          echo "::error::failed to obtain a GitHub OIDC id-token" >&2
+          exit 1
+        fi
+        # 2. Exchange it at connect for a short-lived connect token.
+        token="$(curl -sSf -X POST "${CONNECT_URL}/auth/github-actions/exchange" \
+          -H 'content-type: application/json' \
+          -d "$(jq -nc --arg t "$idtoken" '{token: $t}')" | jq -r '.data.token')"
+        if [ -z "$token" ] || [ "$token" = "null" ]; then
+          echo "::error::connect did not return a token — is a publish trust configured for this repo?" >&2
+          exit 1
+        fi
+        echo "::add-mask::$token"
+        # 3. Log the CLI in with the ephemeral token.
+        avocado connect auth login --url "$CONNECT_URL" --token "$token"

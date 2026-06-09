@@ -1,0 +1,35 @@
+name: Setup avocado CLI
+description: Download and install the avocado CLI from GitHub Releases onto the runner PATH.
+branding:
+  icon: download
+  color: green
+inputs:
+  version:
+    description: avocado-cli release tag (e.g. 0.41.0) or "latest".
+    required: false
+    default: latest
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        repo="avocado-linux/avocado-cli"
+        ver="$INPUT_VERSION"
+        if [ "$ver" = "latest" ]; then
+          ver="$(curl -sSfL "https://api.github.com/repos/${repo}/releases/latest" | jq -r .tag_name)"
+        fi
+        # GitHub-hosted Linux runners are x86_64 — use the glibc build.
+        triple="x86_64-unknown-linux-gnu"
+        asset="avocado-${ver}_${triple}.tar.gz"
+        url="https://github.com/${repo}/releases/download/${ver}/${asset}"
+        echo "Installing avocado ${ver} from ${url}"
+        tmp="$(mktemp -d)"
+        curl -sSfL "$url" -o "${tmp}/cli.tar.gz"
+        tar -xzf "${tmp}/cli.tar.gz" -C "${tmp}"
+        mkdir -p "${HOME}/.local/bin"
+        install -m 0755 "${tmp}/avocado" "${HOME}/.local/bin/avocado"
+        echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+        "${HOME}/.local/bin/avocado" --version
