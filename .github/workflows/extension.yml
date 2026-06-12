@@ -5,16 +5,26 @@ name: Avocado Extension CI
 #   on PR / push  -> install + build the extension against the distro SDK
 #                    (default release 2024) to prove it still assembles.
 #   on tag        -> package the extension into a noarch RPM and publish it to
-#                    avocado-connect (keyless: GitHub OIDC -> short-lived token).
+#                    avocado-connect.
+#
+# Publish auth — two paths, the PAT takes precedence:
+#   * PAT  — pass a connect API token as the `connect-token` secret. Used directly;
+#            works today and needs no server-side trust setup. Use this while the
+#            keyless OIDC trust plane is still being wired up.
+#   * OIDC — if no `connect-token` secret is set, fall back to keyless GitHub OIDC
+#            -> short-lived token (needs a publish trust configured on connect and
+#            `permissions: id-token: write` on the caller job).
 #
 # The build target is auto-derived from avocado.yaml: `supported_targets: '*'`
 # builds on qemux86-64; a single-board BSP builds on its board. Override with the
-# `target` input. Callers need `permissions: id-token: write` for tag publishes.
+# `target` input.
 #
 # Usage (thin caller, identical in every repo):
 #   jobs:
 #     ci:
 #       uses: avocado-linux/actions/.github/workflows/extension.yml@v1
+#       secrets:
+#         connect-token: ${{ secrets.AVOCADO_CONNECT_TOKEN }}   # PAT path (optional)
 
 on:
   workflow_call:
@@ -55,6 +65,12 @@ on:
         description: Comma-separated machines to publish for. Empty = the resolved build target.
         type: string
         default: ""
+    secrets:
+      connect-token:
+        description: >-
+          A connect API token (PAT). When set, it is used directly to publish and
+          GitHub OIDC is skipped. Leave unset to use the keyless OIDC exchange.
+        required: false
 
 jobs:
   resolve:
@@ -150,7 +166,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      id-token: write   # only consumed by the OIDC fallback; harmless with a PAT
     steps:
       - name: Guard — tag matches avocado.yaml version
         env:
@@ -173,7 +189,30 @@ jobs:
           name: ext-rpm
           path: out
 
+      # Pick the auth path. PAT takes precedence; map the secret to env and branch
+      # on a plain output rather than referencing a secret in an `if:` expression.
+      - name: Select auth method
+        id: auth
+        env:
+          CONNECT_TOKEN: ${{ secrets.connect-token }}
+        run: |
+          if [ -n "${CONNECT_TOKEN:-}" ]; then
+            echo "Using PAT (connect-token secret) for publish auth"
+            echo "method=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "No connect-token secret set — falling back to GitHub OIDC"
+            echo "method=oidc" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate (connect token / PAT)
+        if: steps.auth.outputs.method == 'pat'
+        env:
+          CONNECT_URL: ${{ inputs.connect-url }}
+          CONNECT_TOKEN: ${{ secrets.connect-token }}
+        run: avocado connect auth login --url "$CONNECT_URL" --token "$CONNECT_TOKEN"
+
       - name: Authenticate (GitHub OIDC -> connect)
+        if: steps.auth.outputs.method == 'oidc'
         uses: avocado-linux/actions/oidc-login@v1
         with:
           connect-url: ${{ inputs.connect-url }}

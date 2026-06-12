@@ -18,16 +18,32 @@ on:
     tags: ['[0-9]+.[0-9]+.[0-9]+', '[0-9]+.[0-9]+.[0-9]+-*']
 permissions:
   contents: read
-  id-token: write   # required for the keyless publish on tags
+  id-token: write   # only needed for the keyless OIDC publish path
 jobs:
   ci:
     uses: avocado-linux/actions/.github/workflows/extension.yml@v1
+    secrets:
+      connect-token: ${{ secrets.AVOCADO_CONNECT_TOKEN }}   # PAT path (optional)
     # all inputs are optional — the build target is auto-derived from avocado.yaml
 ```
 
 - **On PR / push:** `avocado install` + `avocado ext build` against the distro SDK
   (default release `2024`, channel `edge`) to prove the extension still assembles.
 - **On tag:** `avocado ext package` → publish the RPM to avocado-connect.
+
+### Publish auth: PAT or keyless OIDC
+
+The publish step authenticates one of two ways, **PAT first**:
+
+1. **PAT (recommended today).** Set a connect API token as the `connect-token`
+   secret (store it as e.g. `AVOCADO_CONNECT_TOKEN` in the repo/org and pass it
+   through `secrets:` as above). It is used directly — no server-side trust setup,
+   so it works before the OIDC trust plane is provisioned. The `id-token: write`
+   permission is then unused.
+2. **Keyless OIDC (fallback).** If no `connect-token` secret is set, the job falls
+   back to exchanging its GitHub OIDC id-token for a short-lived connect token
+   (see below). This needs a publish trust configured on connect **and**
+   `permissions: id-token: write` on the caller job.
 
 The build target comes from `avocado.yaml`: `supported_targets: '*'` builds on
 `qemux86-64`; a single-board BSP builds on its board. Override with the `target`
@@ -58,9 +74,10 @@ connect token and logs the CLI in. No secret to store. Requires
 - run: avocado connect ext publish ./out/my-ext-1.0.0-r0.noarch.rpm --targets qemux86-64
 ```
 
-## How publishing is authorized (keyless)
+## How keyless (OIDC) publishing is authorized
 
-There is **no long-lived token in a secret**. On a tag build the job mints a
+This is the fallback path, used when no `connect-token` secret is set. With it
+there is **no long-lived token in a secret**. On a tag build the job mints a
 GitHub-signed OIDC id-token and exchanges it at
 `POST <connect>/auth/github-actions/exchange`. Connect verifies the token against
 GitHub's JWKS and matches a **publish-trust policy** (which `owner/repo` may
