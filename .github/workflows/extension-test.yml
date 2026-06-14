@@ -1,0 +1,98 @@
+name: Avocado Extension — Test build
+
+# Reusable SINGLE-COMBO build check for an Avocado extension / BSP repo.
+#
+# This proves the extension assembles against one (target, distro-release,
+# distro-channel[, repo-url]) combination. It never packages or publishes.
+#
+# The CALLER owns the matrix: put `strategy.matrix` on the job that calls this and
+# pass each combo through `with:` — e.g. several targets, or the same target built
+# against a different feed (set `repo-url`) when the extension depends on upstream
+# packages that live in a non-default feed. See README.
+#
+#   jobs:
+#     build:
+#       strategy:
+#         matrix:
+#           include:
+#             - { target: qemux86-64, distro-release: "2026", distro-channel: edge }
+#       uses: avocado-linux/actions/.github/workflows/extension-test.yml@v1
+#       with:
+#         target:         ${{ matrix.target }}
+#         distro-release: ${{ matrix.distro-release }}
+#         distro-channel: ${{ matrix.distro-channel }}
+#         repo-url:       ${{ matrix.repo-url }}
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: Build target machine (e.g. qemux86-64). Required.
+        type: string
+        required: true
+      distro-release:
+        description: Distro SDK release to build against (sets AVOCADO_DISTRO_RELEASE).
+        type: string
+        default: "2026"
+      distro-channel:
+        description: Distro SDK channel (sets AVOCADO_DISTRO_CHANNEL).
+        type: string
+        default: "edge"
+      repo-url:
+        description: >-
+          Override the package-feed base URL (sets AVOCADO_REPO_URL). Use when the
+          extension depends on upstream packages in a non-default feed; the effective
+          feed is "<repo-url>/<distro-release>/<distro-channel>/...". Empty = default.
+        type: string
+        default: ""
+      cli-version:
+        description: avocado-cli release to use ("latest" or a tag like 0.41.0).
+        type: string
+        default: "latest"
+
+jobs:
+  build:
+    name: Build ${{ inputs.target }} @ ${{ inputs.distro-release }}/${{ inputs.distro-channel }}
+    runs-on: ubuntu-latest
+    env:
+      AVOCADO_DISTRO_RELEASE: ${{ inputs.distro-release }}
+      AVOCADO_DISTRO_CHANNEL: ${{ inputs.distro-channel }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # Only export AVOCADO_REPO_URL when an override is given — an empty value would
+      # still be "set" and the CLI would treat "" as the feed URL.
+      - name: Configure feed override
+        if: inputs.repo-url != ''
+        run: |
+          echo "Building against feed override: ${{ inputs.repo-url }}"
+          echo "AVOCADO_REPO_URL=${{ inputs.repo-url }}" >> "$GITHUB_ENV"
+
+      - name: Install avocado CLI
+        uses: avocado-linux/actions/setup-avocado-cli@jschneck/ext-ci-helpers
+        with:
+          version: ${{ inputs.cli-version }}
+
+      - name: Resolve extension name
+        id: ext
+        run: |
+          name="$(python3 -c "import yaml; e=(yaml.safe_load(open('avocado.yaml')) or {}).get('extensions') or {}; print(next(iter(e),''))")"
+          if [ -z "$name" ]; then
+            echo "::error::avocado.yaml has no \`extensions:\` block" >&2
+            exit 1
+          fi
+          echo "Extension: $name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      # Explicit install sequence. -f is required: CI has no TTY to answer the dnf
+      # y/n prompts. --no-tui streams plain sequential output into the job log.
+      - name: avocado sdk install
+        run: avocado sdk install -f --no-tui --target "${{ inputs.target }}"
+
+      - name: avocado ext install
+        run: avocado ext install -f --no-tui "${{ steps.ext.outputs.name }}" --target "${{ inputs.target }}"
+
+      - name: avocado ext build
+        run: avocado ext build --no-tui "${{ steps.ext.outputs.name }}" --target "${{ inputs.target }}"

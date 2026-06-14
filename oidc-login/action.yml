@@ -46,4 +46,4 @@ runs:
         fi
         echo "::add-mask::$token"
         # 3. Log the CLI in with the ephemeral token.
-        avocado connect auth login --url "$CONNECT_URL" --token "$token"
+        avocado connect auth login --no-tui --url "$CONNECT_URL" --token "$token"

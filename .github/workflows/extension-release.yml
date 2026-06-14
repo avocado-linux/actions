@@ -1,0 +1,180 @@
+name: Avocado Extension — Release (package + publish)
+
+# Reusable SINGLE-COMBO package-and-publish for an Avocado extension / BSP repo.
+#
+# Packages the extension into a noarch RPM and publishes it to avocado-connect for
+# one (target, distro-release, distro-channel) combination. The publish feed is
+# DERIVED from distro-release/distro-channel — the feed an extension lands in always
+# matches what it was built against (there is no separate target-release/channel knob).
+#
+# The CALLER owns the matrix: put `strategy.matrix` on the job that calls this and
+# pass each combo through `with:`. Intended to run on a tag push; the tag must equal
+# the extension's `version` in avocado.yaml (a guard fails the publish otherwise).
+#
+# Publish auth — two paths, PAT takes precedence:
+#   * PAT  — pass a connect API token as the `connect-token` secret. Works today.
+#   * OIDC — if no `connect-token` secret is set, fall back to keyless GitHub OIDC
+#            (needs a publish trust on connect + `permissions: id-token: write`).
+#
+#   jobs:
+#     publish:
+#       strategy:
+#         matrix:
+#           include:
+#             - { target: qemux86-64, distro-release: "2026", distro-channel: edge }
+#       uses: avocado-linux/actions/.github/workflows/extension-release.yml@v1
+#       with:
+#         target:         ${{ matrix.target }}
+#         distro-release: ${{ matrix.distro-release }}
+#         distro-channel: ${{ matrix.distro-channel }}
+#       secrets:
+#         connect-token: ${{ secrets.AVOCADO_CONNECT_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: Build/publish target machine (e.g. qemux86-64). Required.
+        type: string
+        required: true
+      distro-release:
+        description: >-
+          Distro release to build against AND publish into (sets AVOCADO_DISTRO_RELEASE).
+        type: string
+        default: "2026"
+      distro-channel:
+        description: >-
+          Distro channel to build against AND publish into (sets AVOCADO_DISTRO_CHANNEL).
+        type: string
+        default: "edge"
+      repo-url:
+        description: >-
+          Override the package-feed base URL used for the build (sets AVOCADO_REPO_URL).
+          Empty = default feed.
+        type: string
+        default: ""
+      connect-url:
+        description: avocado-connect base URL.
+        type: string
+        default: "https://connect.peridio.com"
+      oidc-audience:
+        description: Audience to request the GitHub OIDC id-token with (OIDC fallback only).
+        type: string
+        default: "avocado-connect"
+      cli-version:
+        description: avocado-cli release to use ("latest" or a tag like 0.41.0).
+        type: string
+        default: "latest"
+    secrets:
+      connect-token:
+        description: >-
+          A connect API token (PAT). When set, it is used directly to publish and
+          GitHub OIDC is skipped. Leave unset to use the keyless OIDC exchange.
+        required: false
+
+jobs:
+  release:
+    name: Publish ${{ inputs.target }} @ ${{ inputs.distro-release }}/${{ inputs.distro-channel }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # only consumed by the OIDC fallback; harmless with a PAT
+    env:
+      AVOCADO_DISTRO_RELEASE: ${{ inputs.distro-release }}
+      AVOCADO_DISTRO_CHANNEL: ${{ inputs.distro-channel }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Configure feed override
+        if: inputs.repo-url != ''
+        run: |
+          echo "Building against feed override: ${{ inputs.repo-url }}"
+          echo "AVOCADO_REPO_URL=${{ inputs.repo-url }}" >> "$GITHUB_ENV"
+
+      - name: Install avocado CLI
+        uses: avocado-linux/actions/setup-avocado-cli@jschneck/ext-ci-helpers
+        with:
+          version: ${{ inputs.cli-version }}
+
+      - name: Resolve extension name + version
+        id: ext
+        run: |
+          read -r name version < <(python3 -c "import yaml; c=yaml.safe_load(open('avocado.yaml')) or {}; e=c.get('extensions') or {}; k=next(iter(e),''); v=(e.get(k) or {}).get('version',''); print(k, v)")
+          if [ -z "$name" ]; then
+            echo "::error::avocado.yaml has no \`extensions:\` block" >&2
+            exit 1
+          fi
+          echo "Extension: $name  Version: $version"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Guard — tag matches avocado.yaml version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.ext.outputs.version }}
+        run: |
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag '$TAG' does not match avocado.yaml version '$VERSION' — bump the version or fix the tag" >&2
+            exit 1
+          fi
+
+      # Explicit install sequence. -f is required for non-interactive CI (no TTY).
+      # --no-tui streams plain sequential output into the job log.
+      - name: avocado sdk install
+        run: avocado sdk install -f --no-tui --target "${{ inputs.target }}"
+
+      - name: avocado ext install
+        run: avocado ext install -f --no-tui "${{ steps.ext.outputs.name }}" --target "${{ inputs.target }}"
+
+      - name: avocado ext build
+        run: avocado ext build --no-tui "${{ steps.ext.outputs.name }}" --target "${{ inputs.target }}"
+
+      - name: avocado ext package
+        run: |
+          mkdir -p out
+          avocado ext package --no-tui "${{ steps.ext.outputs.name }}" \
+            --target "${{ inputs.target }}" --out out
+          ls -l out
+
+      # Pick the auth path. PAT takes precedence; map the secret to env and branch on
+      # a plain output rather than referencing a secret in an `if:` expression.
+      - name: Select auth method
+        id: auth
+        env:
+          CONNECT_TOKEN: ${{ secrets.connect-token }}
+        run: |
+          if [ -n "${CONNECT_TOKEN:-}" ]; then
+            echo "Using PAT (connect-token secret) for publish auth"
+            echo "method=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "No connect-token secret set — falling back to GitHub OIDC"
+            echo "method=oidc" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate (connect token / PAT)
+        if: steps.auth.outputs.method == 'pat'
+        env:
+          CONNECT_URL: ${{ inputs.connect-url }}
+          CONNECT_TOKEN: ${{ secrets.connect-token }}
+        run: avocado connect auth login --no-tui --url "$CONNECT_URL" --token "$CONNECT_TOKEN"
+
+      - name: Authenticate (GitHub OIDC -> connect)
+        if: steps.auth.outputs.method == 'oidc'
+        uses: avocado-linux/actions/oidc-login@jschneck/ext-ci-helpers
+        with:
+          connect-url: ${{ inputs.connect-url }}
+          audience: ${{ inputs.oidc-audience }}
+
+      # The publish feed (release/channel) is derived from AVOCADO_DISTRO_RELEASE/CHANNEL,
+      # the same config the build used — so the feed always matches the build.
+      - name: Publish extension
+        env:
+          CONNECT_URL: ${{ inputs.connect-url }}
+        run: |
+          rpm="$(ls out/*.rpm | head -1)"
+          echo "Publishing $rpm to ${AVOCADO_DISTRO_RELEASE}/${AVOCADO_DISTRO_CHANNEL} for ${{ inputs.target }}"
+          AVOCADO_CONNECT_URL="$CONNECT_URL" avocado connect ext publish --no-tui "$rpm" \
+            --targets "${{ inputs.target }}"

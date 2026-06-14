@@ -7,57 +7,90 @@ anyone publishing their own Avocado content.
 
 ## Reusable workflows
 
-### `extension.yml` — build extensions on PR, publish on tag
+Two **single-combo** helpers. Each runs one `(target, distro-release, distro-channel
+[, repo-url])` combination — the **caller owns the matrix**: put `strategy.matrix` on
+the job that calls the helper and pass each combo through `with:`. This keeps the
+combination set in the consuming repo's workflow, not in `avocado.yaml`.
+
+### `extension-test.yml` — "does it build" (PR mode)
+
+Builds the extension for one combo to prove it assembles. Never packages or publishes.
+Use `repo-url` to build against a non-default feed when the extension depends on
+upstream packages that live there.
 
 ```yaml
-# .github/workflows/ci.yml in your extension/BSP repo
-name: CI
-on:
-  pull_request:
-  push:
-    tags: ['[0-9]+.[0-9]+.[0-9]+', '[0-9]+.[0-9]+.[0-9]+-*']
-permissions:
-  contents: read
-  id-token: write   # only needed for the keyless OIDC publish path
+# .github/workflows/test.yml in your extension/BSP repo
+name: Test
+on: pull_request
 jobs:
-  ci:
-    uses: avocado-linux/actions/.github/workflows/extension.yml@v1
-    secrets:
-      connect-token: ${{ secrets.AVOCADO_CONNECT_TOKEN }}   # PAT path (optional)
-    # all inputs are optional — the build target is auto-derived from avocado.yaml
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: qemux86-64, distro-release: "2026", distro-channel: edge }
+          - { target: qemuarm64,  distro-release: "2026", distro-channel: edge }
+          # build against a different feed because we depend on an upstream pkg there:
+          - { target: qemux86-64, distro-release: "2026", distro-channel: edge,
+              repo-url: "https://repo.staging.example.com" }
+    uses: avocado-linux/actions/.github/workflows/extension-test.yml@v1
+    with:
+      target:         ${{ matrix.target }}
+      distro-release: ${{ matrix.distro-release }}
+      distro-channel: ${{ matrix.distro-channel }}
+      repo-url:       ${{ matrix.repo-url }}      # empty = default feed
 ```
 
-- **On PR / push:** `avocado install` + `avocado ext build` against the distro SDK
-  (default release `2024`, channel `edge`) to prove the extension still assembles.
-- **On tag:** `avocado ext package` → publish the RPM to avocado-connect.
+Inputs: `target` (required), `distro-release` (`2026`), `distro-channel` (`edge`),
+`repo-url` (default feed), `cli-version` (`latest`).
+
+### `extension-release.yml` — package + publish (tag mode)
+
+Packages the extension into a noarch RPM and publishes it to avocado-connect. The
+publish feed is **derived from `distro-release`/`distro-channel`** — the same config
+it's built against, so the feed can't diverge from the build (there is no separate
+`target-release`/`target-channel`). Run it on a tag push; the tag must equal the
+extension's `version` in `avocado.yaml` (a guard fails the publish otherwise).
+
+```yaml
+# .github/workflows/release.yml in your extension/BSP repo
+name: Release
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+', '[0-9]+.[0-9]+.[0-9]+-*']
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: qemux86-64, distro-release: "2026", distro-channel: edge }
+          - { target: qemuarm64,  distro-release: "2026", distro-channel: edge }
+    uses: avocado-linux/actions/.github/workflows/extension-release.yml@v1
+    with:
+      target:         ${{ matrix.target }}
+      distro-release: ${{ matrix.distro-release }}
+      distro-channel: ${{ matrix.distro-channel }}
+    secrets:
+      connect-token: ${{ secrets.AVOCADO_CONNECT_TOKEN }}   # PAT path (optional)
+```
+
+Inputs: `target` (required), `distro-release` (`2026`), `distro-channel` (`edge`),
+`repo-url` (default feed), `connect-url`, `oidc-audience`, `cli-version` (`latest`).
+Secret: `connect-token` (optional — see below).
 
 ### Publish auth: PAT or keyless OIDC
 
-The publish step authenticates one of two ways, **PAT first**:
+`extension-release.yml` authenticates one of two ways, **PAT first**:
 
 1. **PAT (recommended today).** Set a connect API token as the `connect-token`
-   secret (store it as e.g. `AVOCADO_CONNECT_TOKEN` in the repo/org and pass it
-   through `secrets:` as above). It is used directly — no server-side trust setup,
-   so it works before the OIDC trust plane is provisioned. The `id-token: write`
-   permission is then unused.
+   secret (store it as e.g. an `AVOCADO_CONNECT_TOKEN` org secret and pass it through
+   `secrets:` as above). It is used directly — no server-side trust setup, so it works
+   before the OIDC trust plane is provisioned. The `id-token: write` permission is
+   then unused.
 2. **Keyless OIDC (fallback).** If no `connect-token` secret is set, the job falls
-   back to exchanging its GitHub OIDC id-token for a short-lived connect token
-   (see below). This needs a publish trust configured on connect **and**
-   `permissions: id-token: write` on the caller job.
-
-The build target comes from `avocado.yaml`: `supported_targets: '*'` builds on
-`qemux86-64`; a single-board BSP builds on its board. Override with the `target`
-input. The tag must equal the extension's `version` in `avocado.yaml` (a guard
-fails the publish otherwise).
-
-Key inputs (all optional): `distro-release` (`2024`), `distro-channel` (`edge`),
-`cli-version` (`latest`), `target` (auto), `connect-url`, `oidc-audience`,
-`publish-targets`.
-
-The extension publishes into the feed for `distro-release`/`distro-channel` — the same
-config it's built against, so the publish feed can't diverge from the build (there is no
-separate `target-release`/`target-channel`). To publish into a different feed, change
-`distro-release`/`distro-channel`.
+   back to exchanging its GitHub OIDC id-token for a short-lived connect token (see
+   below). This needs a publish trust configured on connect.
 
 ## Composite actions (also usable standalone)
 
@@ -93,6 +126,12 @@ repos this is a single owner-wildcard trust.
 
 ## Versioning
 
-Reference workflows/actions at `@v1`. The `extension.yml` workflow references the
-composite actions in this repo at `@v1` as well, so keep the `v1` tag moving
-forward within the v1 major; cut `@v2` for breaking changes.
+Reference workflows/actions at `@v1`. The reusable workflows reference the composite
+actions in this repo at `@v1` as well, so keep the `v1` tag moving forward within the
+v1 major; cut `@v2` for breaking changes.
+
+**Before `v1` exists / while iterating:** reusable workflows and actions also resolve
+by branch or SHA, so a caller can pin to a development branch
+(`...@jschneck/ext-ci-helpers`) to exercise changes before a release is tagged. During
+that phase the workflows' internal action refs point at the same dev branch; the
+release step is to repoint them to `@v1` and create the `v1` tag.
