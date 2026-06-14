@@ -65,6 +65,14 @@ on:
         description: avocado-cli release to use ("latest" or a tag like 0.41.0).
         type: string
         default: "latest"
+      org:
+        description: >-
+          Organization id (UUID) to scope the publish to — passed to the CLI as `--org`.
+          The caller supplies this (it may wire it from its own secret); empty = let the
+          server resolve the org. Not declared as a workflow secret here: an org id is not
+          sensitive, and this keeps the action from reaching into the caller's secrets.
+        type: string
+        default: ""
     secrets:
       connect-token:
         description: >-
@@ -173,8 +181,14 @@ jobs:
       - name: Publish extension
         env:
           CONNECT_URL: ${{ inputs.connect-url }}
+          CONNECT_ORG: ${{ inputs.org }}
         run: |
           rpm="$(ls out/*.rpm | head -1)"
-          echo "Publishing $rpm to ${AVOCADO_DISTRO_RELEASE}/${AVOCADO_DISTRO_CHANNEL} for ${{ inputs.target }}"
+          # Pass --org only when the caller supplied one; otherwise let the server
+          # resolve the org.
+          org_args=()
+          [ -n "${CONNECT_ORG:-}" ] && org_args=(--org "$CONNECT_ORG")
+          echo "Publishing $rpm to ${AVOCADO_DISTRO_RELEASE}/${AVOCADO_DISTRO_CHANNEL} for ${{ inputs.target }}${CONNECT_ORG:+ (org $CONNECT_ORG)}"
           AVOCADO_CONNECT_URL="$CONNECT_URL" avocado connect ext publish --no-tui "$rpm" \
+            "${org_args[@]}" \
             --targets "${{ inputs.target }}"
