@@ -131,22 +131,13 @@ jobs:
             exit 1
           fi
 
-      # Explicit install sequence. -f is required for non-interactive CI (no TTY).
+      # Release packages + publishes only — no sdk/ext install or build step.
       # --no-tui streams plain sequential output into the job log.
-      - name: avocado sdk install
-        run: avocado sdk install -f --no-tui --target "${{ inputs.target }}"
-
-      - name: avocado ext install
-        run: avocado ext install -f --no-tui "${{ steps.ext.outputs.name }}" --target "${{ inputs.target }}"
-
-      - name: avocado ext build
-        run: avocado ext build --no-tui "${{ steps.ext.outputs.name }}" --target "${{ inputs.target }}"
-
       - name: avocado ext package
         run: |
           mkdir -p out
           avocado ext package --no-tui "${{ steps.ext.outputs.name }}" \
-            --target "${{ inputs.target }}" --out out
+            --target "${{ inputs.target }}" --out-dir out
           ls -l out
 
       # Pick the auth path. PAT takes precedence; map the secret to env and branch on
