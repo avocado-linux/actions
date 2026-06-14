@@ -53,14 +53,6 @@ on:
         description: Audience to request the GitHub OIDC id-token with (publish only).
         type: string
         default: "avocado-connect"
-      target-release:
-        description: Feed release to publish into (publish only).
-        type: string
-        default: "2026"
-      target-channel:
-        description: Feed channel to publish into (publish only).
-        type: string
-        default: "edge"
       publish-targets:
         description: Comma-separated machines to publish for. Empty = the resolved build target.
         type: string
@@ -164,6 +156,12 @@ jobs:
     needs: [resolve, build]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    # The publish feed (release/channel) is derived from the distro config — same source as the
+    # build — so the feed an extension lands in always matches what it was built against. There
+    # is no separate target-release/target-channel knob.
+    env:
+      AVOCADO_DISTRO_RELEASE: ${{ inputs.distro-release }}
+      AVOCADO_DISTRO_CHANNEL: ${{ inputs.distro-channel }}
     permissions:
       contents: read
       id-token: write   # only consumed by the OIDC fallback; harmless with a PAT
@@ -225,8 +223,6 @@ jobs:
           rpm="$(ls out/*.rpm | head -1)"
           targets="${{ inputs.publish-targets }}"
           [ -n "$targets" ] || targets="${{ needs.resolve.outputs.target }}"
-          echo "Publishing $rpm to ${{ inputs.target-release }}/${{ inputs.target-channel }} for $targets"
+          echo "Publishing $rpm to ${AVOCADO_DISTRO_RELEASE}/${AVOCADO_DISTRO_CHANNEL} for $targets"
           AVOCADO_CONNECT_URL="$CONNECT_URL" avocado connect ext publish "$rpm" \
-            --target-release "${{ inputs.target-release }}" \
-            --target-channel "${{ inputs.target-channel }}" \
             --targets "$targets"

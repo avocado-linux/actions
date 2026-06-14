@@ -52,7 +52,12 @@ fails the publish otherwise).
 
 Key inputs (all optional): `distro-release` (`2024`), `distro-channel` (`edge`),
 `cli-version` (`latest`), `target` (auto), `connect-url`, `oidc-audience`,
-`target-release` (`2026`), `target-channel` (`edge`), `publish-targets`.
+`publish-targets`.
+
+The extension publishes into the feed for `distro-release`/`distro-channel` — the same
+config it's built against, so the publish feed can't diverge from the build (there is no
+separate `target-release`/`target-channel`). To publish into a different feed, change
+`distro-release`/`distro-channel`.
 
 ## Composite actions (also usable standalone)
 
