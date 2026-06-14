@@ -65,19 +65,19 @@ on:
         description: avocado-cli release to use ("latest" or a tag like 0.41.0).
         type: string
         default: "latest"
-      org:
-        description: >-
-          Organization id (UUID) to scope the publish to — passed to the CLI as `--org`.
-          The caller supplies this (it may wire it from its own secret); empty = let the
-          server resolve the org. Not declared as a workflow secret here: an org id is not
-          sensitive, and this keeps the action from reaching into the caller's secrets.
-        type: string
-        default: ""
     secrets:
       connect-token:
         description: >-
           A connect API token (PAT). When set, it is used directly to publish and
           GitHub OIDC is skipped. Leave unset to use the keyless OIDC exchange.
+        required: false
+      connect-org:
+        description: >-
+          Organization id (UUID) to scope the publish to — forwarded to the CLI as `--org`.
+          Passed through the secrets block (not `with:`) because GitHub forbids referencing
+          `secrets.*` in a caller's `with:`. The caller maps its own secret into this; empty
+          lets the server resolve the org. (An org id isn't truly sensitive — if you'd rather
+          pass it as a plain `with:` input, store it as an Actions *variable* instead.)
         required: false
 
 jobs:
@@ -181,7 +181,7 @@ jobs:
       - name: Publish extension
         env:
           CONNECT_URL: ${{ inputs.connect-url }}
-          CONNECT_ORG: ${{ inputs.org }}
+          CONNECT_ORG: ${{ secrets.connect-org }}
         run: |
           rpm="$(ls out/*.rpm | head -1)"
           # Pass --org only when the caller supplied one; otherwise let the server
