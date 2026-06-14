@@ -104,7 +104,7 @@ jobs:
           echo "AVOCADO_REPO_URL=${{ inputs.repo-url }}" >> "$GITHUB_ENV"
 
       - name: Install avocado CLI
-        uses: avocado-linux/actions/setup-avocado-cli@jschneck/ext-ci-helpers
+        uses: avocado-linux/actions/setup-avocado-cli@v1
         with:
           version: ${{ inputs.cli-version }}
 
@@ -164,7 +164,7 @@ jobs:
 
       - name: Authenticate (GitHub OIDC -> connect)
         if: steps.auth.outputs.method == 'oidc'
-        uses: avocado-linux/actions/oidc-login@jschneck/ext-ci-helpers
+        uses: avocado-linux/actions/oidc-login@v1
         with:
           connect-url: ${{ inputs.connect-url }}
           audience: ${{ inputs.oidc-audience }}

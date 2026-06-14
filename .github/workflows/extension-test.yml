@@ -71,7 +71,7 @@ jobs:
           echo "AVOCADO_REPO_URL=${{ inputs.repo-url }}" >> "$GITHUB_ENV"
 
       - name: Install avocado CLI
-        uses: avocado-linux/actions/setup-avocado-cli@jschneck/ext-ci-helpers
+        uses: avocado-linux/actions/setup-avocado-cli@v1
         with:
           version: ${{ inputs.cli-version }}
 
