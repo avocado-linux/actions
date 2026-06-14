@@ -84,9 +84,11 @@ jobs:
   release:
     name: Publish ${{ inputs.target }} @ ${{ inputs.distro-release }}/${{ inputs.distro-channel }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write   # only consumed by the OIDC fallback; harmless with a PAT
+    # No static permissions block: this job INHERITS the caller's token permissions
+    # (capped by the caller). The PAT publish path needs none beyond checkout, so a
+    # PAT-only caller can grant nothing. Callers using the OIDC fallback must grant
+    # `permissions: id-token: write` themselves — declaring it here would force *every*
+    # caller (PAT included) to grant id-token: write, which defeats PAT-first.
     env:
       AVOCADO_DISTRO_RELEASE: ${{ inputs.distro-release }}
       AVOCADO_DISTRO_CHANNEL: ${{ inputs.distro-channel }}
