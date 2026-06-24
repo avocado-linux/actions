@@ -65,6 +65,15 @@ on:
         description: avocado-cli release to use ("latest" or a tag like 0.41.0).
         type: string
         default: "latest"
+      ext-version:
+        description: >-
+          Explicit extension version. When set, it is exported as AVOCADO_EXT_VERSION
+          (so an avocado.yaml `version: '{{ env.AVOCADO_EXT_VERSION }}'` template resolves
+          at package time) AND used for the tag guard instead of the literal avocado.yaml
+          value. Intended for extensions that track a packaged program's version — e.g. a
+          caller derives this from Cargo.toml. Empty = use the literal avocado.yaml version.
+        type: string
+        default: ""
     secrets:
       connect-token:
         description: >-
@@ -97,6 +106,16 @@ jobs:
         with:
           submodules: recursive
 
+      # When the caller supplies an explicit version (e.g. read from Cargo.toml), export
+      # it so an avocado.yaml `version: '{{ env.AVOCADO_EXT_VERSION }}'` template resolves
+      # at package time. Done in a step (not job env) so an empty input never clobbers a
+      # literal avocado.yaml version with "".
+      - name: Export extension version
+        if: inputs.ext-version != ''
+        run: |
+          echo "Tracking packaged-program version: ${{ inputs.ext-version }}"
+          echo "AVOCADO_EXT_VERSION=${{ inputs.ext-version }}" >> "$GITHUB_ENV"
+
       - name: Configure feed override
         if: inputs.repo-url != ''
         run: |
@@ -110,11 +129,18 @@ jobs:
 
       - name: Resolve extension name + version
         id: ext
+        env:
+          EXT_VERSION_OVERRIDE: ${{ inputs.ext-version }}
         run: |
           read -r name version < <(python3 -c "import yaml; c=yaml.safe_load(open('avocado.yaml')) or {}; e=c.get('extensions') or {}; k=next(iter(e),''); v=(e.get(k) or {}).get('version',''); print(k, v)")
           if [ -z "$name" ]; then
             echo "::error::avocado.yaml has no \`extensions:\` block" >&2
             exit 1
+          fi
+          # An explicit version (e.g. from Cargo.toml) wins over the avocado.yaml value,
+          # which for program-tracking extensions is the unrendered env template.
+          if [ -n "${EXT_VERSION_OVERRIDE:-}" ]; then
+            version="$EXT_VERSION_OVERRIDE"
           fi
           echo "Extension: $name  Version: $version"
           echo "name=$name" >> "$GITHUB_OUTPUT"
