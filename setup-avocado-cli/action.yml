@@ -14,12 +14,31 @@ runs:
     - shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
+        # The release lookup below hits the GitHub API, which allows only 60
+        # unauthenticated requests per hour per IP. A large matrix (the
+        # references repo runs ~35 jobs at once) blows through that and the
+        # losing jobs fail with `curl: (22) ... error: 403` before doing any
+        # work. Authenticating raises the limit to 1000/hour for the repo.
+        GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         repo="avocado-linux/avocado-cli"
         ver="$INPUT_VERSION"
         if [ "$ver" = "latest" ]; then
-          ver="$(curl -sSfL "https://api.github.com/repos/${repo}/releases/latest" | jq -r .tag_name)"
+          auth=()
+          if [ -n "${GH_TOKEN:-}" ]; then
+            auth=(-H "Authorization: Bearer ${GH_TOKEN}")
+          fi
+          # --retry covers the transient 5xx/connection blips that authentication
+          # does not help with.
+          ver="$(curl -sSfL --retry 3 --retry-all-errors \
+            "${auth[@]}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${repo}/releases/latest" | jq -r .tag_name)"
+          if [ -z "$ver" ] || [ "$ver" = "null" ]; then
+            echo "::error::could not resolve the latest avocado-cli release tag" >&2
+            exit 1
+          fi
         fi
         # GitHub-hosted Linux runners are x86_64 — use the glibc build.
         triple="x86_64-unknown-linux-gnu"
@@ -27,7 +46,7 @@ runs:
         url="https://github.com/${repo}/releases/download/${ver}/${asset}"
         echo "Installing avocado ${ver} from ${url}"
         tmp="$(mktemp -d)"
-        curl -sSfL "$url" -o "${tmp}/cli.tar.gz"
+        curl -sSfL --retry 3 --retry-all-errors "$url" -o "${tmp}/cli.tar.gz"
         tar -xzf "${tmp}/cli.tar.gz" -C "${tmp}"
         mkdir -p "${HOME}/.local/bin"
         install -m 0755 "${tmp}/avocado" "${HOME}/.local/bin/avocado"
