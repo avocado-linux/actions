@@ -97,7 +97,9 @@ jobs:
       - name: Resolve extension name
         id: ext
         run: |
-          name="$(python3 -c "import yaml; e=(yaml.safe_load(open('avocado.yaml')) or {}).get('extensions') or {}; print(next(iter(e),''))")"
+          # Build the extension this repo defines inline, not a `depends_on`
+          # `source:` stub that may be declared first (see extension-release.yml).
+          name="$(python3 -c "import yaml; e=(yaml.safe_load(open('avocado.yaml')) or {}).get('extensions') or {}; b=[k for k,v in e.items() if not (isinstance(v,dict) and 'source' in v)]; print(b[0] if b else next(iter(e),''))")"
           if [ -z "$name" ]; then
             echo "::error::avocado.yaml has no \`extensions:\` block" >&2
             exit 1

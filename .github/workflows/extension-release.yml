@@ -132,7 +132,12 @@ jobs:
         env:
           EXT_VERSION_OVERRIDE: ${{ inputs.ext-version }}
         run: |
-          read -r name version < <(python3 -c "import yaml; c=yaml.safe_load(open('avocado.yaml')) or {}; e=c.get('extensions') or {}; k=next(iter(e),''); v=(e.get(k) or {}).get('version',''); print(k, v)")
+          # Select the extension this repo BUILDS. It is defined inline; a
+          # `depends_on` target is instead declared as a `source:` stub so the
+          # resolver can fetch it from the feed. Pick the first inline
+          # (non-source) extension so a stub declared first cannot shadow it;
+          # fall back to the first entry when every extension is a stub.
+          read -r name version < <(python3 -c "import yaml; c=yaml.safe_load(open('avocado.yaml')) or {}; e=c.get('extensions') or {}; b=[kk for kk,vv in e.items() if not (isinstance(vv,dict) and 'source' in vv)]; k=(b[0] if b else next(iter(e),'')); v=(e.get(k) or {}).get('version',''); print(k, v)")
           if [ -z "$name" ]; then
             echo "::error::avocado.yaml has no \`extensions:\` block" >&2
             exit 1
