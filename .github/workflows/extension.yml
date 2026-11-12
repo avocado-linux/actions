@@ -39,6 +39,10 @@ on:
         description: avocado-connect base URL (publish only).
         type: string
         default: "https://connect.peridio.com"
+      connect-org:
+        description: Connect organization id (UUID) to publish into (publish only). An org admin must have created a CI trust for the calling repository.
+        type: string
+        default: ""
       oidc-audience:
         description: Audience to request the GitHub OIDC id-token with (publish only).
         type: string
@@ -176,6 +180,7 @@ jobs:
       - name: Authenticate (GitHub OIDC -> connect)
         uses: avocado-linux/actions/oidc-login@v1
         with:
+          organization: ${{ inputs.connect-org }}
           connect-url: ${{ inputs.connect-url }}
           audience: ${{ inputs.oidc-audience }}
 
