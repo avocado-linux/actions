@@ -35,7 +35,7 @@ input. The tag must equal the extension's `version` in `avocado.yaml` (a guard
 fails the publish otherwise).
 
 Key inputs (all optional): `distro-release` (`2024`), `distro-channel` (`edge`),
-`cli-version` (`latest`), `target` (auto), `connect-url`, `oidc-audience`,
+`cli-version` (`latest`), `target` (auto), `connect-url`, `connect-org`, `oidc-audience`,
 `target-release` (`2026`), `target-channel` (`edge`), `publish-targets`.
 
 ## Composite actions (also usable standalone)
@@ -54,20 +54,23 @@ connect token and logs the CLI in. No secret to store. Requires
 ```yaml
 - uses: avocado-linux/actions/setup-avocado-cli@v1
 - uses: avocado-linux/actions/oidc-login@v1
-  with: { connect-url: https://connect.peridio.com }
+  with:
+    organization: ${{ vars.AVOCADO_CONNECT_ORG }}   # the connect organization id
 - run: avocado connect ext publish ./out/my-ext-1.0.0-r0.noarch.rpm --targets qemux86-64
 ```
 
-## How publishing is authorized (keyless)
+## How CI is authorized (keyless)
 
-There is **no long-lived token in a secret**. On a tag build the job mints a
-GitHub-signed OIDC id-token and exchanges it at
-`POST <connect>/auth/github-actions/exchange`. Connect verifies the token against
-GitHub's JWKS and matches a **publish-trust policy** (which `owner/repo` may
-publish, as whom, to which org) before returning a short-lived token. To grant a
-repo publish access, an Avocado admin adds a trust for it — see
-avocado-connect `docs/ci-oidc-publish.md`. For first-party `avocado-linux/*`
-repos this is a single owner-wildcard trust.
+There is **no long-lived token in a secret**. The job asks GitHub for an OIDC
+id-token and exchanges it at `POST <connect>/auth/github-actions/exchange` for a
+short-lived token in one connect organization. Connect verifies the id-token
+against GitHub's JWKS and requires a **CI trust** in that organization for the
+repository (or every repository of its owner), optionally limited to a ref
+prefix such as `refs/tags/`. An org admin creates the trust; connect pins the
+repository's immutable GitHub ids on first use, so a renamed or re-created
+repository does not inherit it.
+
+The token acts as the admin who created the trust and expires after an hour.
 
 ## Versioning
 

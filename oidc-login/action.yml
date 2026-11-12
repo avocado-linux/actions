@@ -1,9 +1,12 @@
 name: Avocado connect login (GitHub OIDC)
-description: Exchange the GitHub Actions OIDC id-token for a short-lived connect token and log the avocado CLI in. Keyless — no stored secret.
+description: Exchange the GitHub Actions OIDC id-token for a short-lived connect token in one organization and log the avocado CLI in. Keyless — no stored secret.
 branding:
   icon: log-in
   color: green
 inputs:
+  organization:
+    description: Connect organization id (UUID) to get a token for. An org admin must have created a CI trust for this repository in it.
+    required: true
   connect-url:
     description: avocado-connect base URL.
     required: false
@@ -19,6 +22,7 @@ runs:
       env:
         CONNECT_URL: ${{ inputs.connect-url }}
         AUDIENCE: ${{ inputs.audience }}
+        ORGANIZATION: ${{ inputs.organization }}
       run: |
         set -euo pipefail
         if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
@@ -36,12 +40,23 @@ runs:
           echo "::error::failed to obtain a GitHub OIDC id-token" >&2
           exit 1
         fi
-        # 2. Exchange it at connect for a short-lived connect token.
-        token="$(curl -sSf -X POST "${CONNECT_URL}/auth/github-actions/exchange" \
+        if [ -z "${ORGANIZATION}" ]; then
+          echo "::error::the 'organization' input is required (the connect organization id)" >&2
+          exit 1
+        fi
+        # 2. Exchange it at connect for a short-lived token in that organization.
+        body="$(mktemp)"
+        status="$(curl -sS -o "$body" -w '%{http_code}' -X POST "${CONNECT_URL}/auth/github-actions/exchange" \
           -H 'content-type: application/json' \
-          -d "$(jq -nc --arg t "$idtoken" '{token: $t}')" | jq -r '.data.token')"
+          -d "$(jq -nc --arg t "$idtoken" --arg o "$ORGANIZATION" '{token: $t, organization_id: $o}')")"
+        if [ "$status" != 200 ]; then
+          msg="$(jq -r '.message // empty' "$body" 2>/dev/null)"
+          echo "::error::connect refused the exchange (HTTP ${status}): ${msg:-no message}. An org admin creates the CI trust with POST /api/orgs/<org>/ci-trusts." >&2
+          exit 1
+        fi
+        token="$(jq -r '.data.token' "$body")"
         if [ -z "$token" ] || [ "$token" = "null" ]; then
-          echo "::error::connect did not return a token — is a publish trust configured for this repo?" >&2
+          echo "::error::connect answered 200 without a token" >&2
           exit 1
         fi
         echo "::add-mask::$token"
